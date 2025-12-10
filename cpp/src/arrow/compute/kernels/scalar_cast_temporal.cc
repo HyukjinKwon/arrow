@@ -495,6 +495,31 @@ struct CastFunctor<O, I,
   }
 };
 
+// ----------------------------------------------------------------------
+// Float/Double to date32/date64 (ARROW-4258)
+
+template <typename OutType, typename InType>
+struct CastFloatingToDate {
+  using in_type = typename InType::c_type;
+  using out_type = typename OutType::c_type;
+
+  template <typename OutValue, typename InValue>
+  static OutValue Call(KernelContext*, InValue val, Status*) {
+    // Truncate float to integer for date conversion
+    // NaN converts to 0
+    return static_cast<OutValue>(val);
+  }
+};
+
+template <typename O, typename I>
+struct CastFunctor<O, I,
+                   enable_if_t<is_date_type<O>::value && is_floating_type<I>::value>> {
+  static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out) {
+    return applicator::ScalarUnary<O, I, CastFloatingToDate<O, I>>::Exec(ctx, batch,
+                                                                          out);
+  }
+};
+
 namespace {
 
 template <typename Type>
@@ -526,6 +551,10 @@ std::shared_ptr<CastFunction> GetDate32Cast() {
   // int32 -> date32
   AddZeroCopyCast(Type::INT32, int32(), date32(), func.get());
 
+  // float/double -> date32 (ARROW-4258)
+  AddSimpleCast<FloatType, Date32Type>(float32(), date32(), func.get());
+  AddSimpleCast<DoubleType, Date32Type>(float64(), date32(), func.get());
+
   // date64 -> date32
   AddSimpleCast<Date64Type, Date32Type>(date64(), date32(), func.get());
 
@@ -550,6 +579,10 @@ std::shared_ptr<CastFunction> GetDate64Cast() {
 
   // int64 -> date64
   AddZeroCopyCast(Type::INT64, int64(), date64(), func.get());
+
+  // float/double -> date64 (ARROW-4258)
+  AddSimpleCast<FloatType, Date64Type>(float32(), date64(), func.get());
+  AddSimpleCast<DoubleType, Date64Type>(float64(), date64(), func.get());
 
   // date32 -> date64
   AddSimpleCast<Date32Type, Date64Type>(date32(), date64(), func.get());

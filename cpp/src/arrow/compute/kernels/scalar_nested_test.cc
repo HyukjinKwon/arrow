@@ -315,7 +315,7 @@ TEST(TestScalarNested, ListSliceBadParameters) {
   EXPECT_RAISES_WITH_MESSAGE_THAT(
       Invalid,
       ::testing::HasSubstr(
-          "`start`(-1) should be greater than 0 and smaller than `stop`(1)"),
+          "`start`(-1) should be greater than 0 and smaller than or equal to `stop`(1)"),
       CallFunction("list_slice", {input}, &args));
   // start greater than stop
   args.start = 1;
@@ -323,15 +323,19 @@ TEST(TestScalarNested, ListSliceBadParameters) {
   EXPECT_RAISES_WITH_MESSAGE_THAT(
       Invalid,
       ::testing::HasSubstr(
-          "`start`(1) should be greater than 0 and smaller than `stop`(0)"),
+          "`start`(1) should be greater than 0 and smaller than or equal to `stop`(0)"),
       CallFunction("list_slice", {input}, &args));
-  // start same as stop
-  args.stop = args.start;
-  EXPECT_RAISES_WITH_MESSAGE_THAT(
-      Invalid,
-      ::testing::HasSubstr(
-          "`start`(1) should be greater than 0 and smaller than `stop`(1)"),
-      CallFunction("list_slice", {input}, &args));
+  // start same as stop - should return empty lists (ARROW-18281)
+  args.start = 0;
+  args.stop = 0;
+  auto expected = ArrayFromJSON(fixed_size_list(int32(), 0), "[[]]");
+  CheckScalarUnary("list_slice", input, expected, &args);
+  
+  // Test start == stop for variable-length lists
+  args.return_fixed_size_list = std::nullopt;  // Return variable-length list
+  expected = ArrayFromJSON(list(int32()), "[[]]");
+  CheckScalarUnary("list_slice", input, expected, &args);
+  
   // stop not set and FixedSizeList requested with variable sized input
   args.stop = std::nullopt;
   EXPECT_RAISES_WITH_MESSAGE_THAT(

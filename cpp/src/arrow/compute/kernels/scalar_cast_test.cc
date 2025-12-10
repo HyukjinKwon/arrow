@@ -2877,6 +2877,24 @@ TEST(Cast, DateZeroCopy) {
                     date64());
 }
 
+TEST(Cast, FloatToDate) {
+  // ARROW-4258: float/double to date32/date64 with NaNs
+  auto float_array = ArrayFromJSON(float32(), "[1.0, 2.0, null, 4.0]");
+  auto double_array = ArrayFromJSON(float64(), "[1.0, 2.0, null, 4.0]");
+  auto expected_date32 = ArrayFromJSON(date32(), "[1, 2, null, 4]");
+  auto expected_date64 = ArrayFromJSON(date64(), "[1, 2, null, 4]");
+
+  CheckCast(float_array, expected_date32);
+  CheckCast(double_array, expected_date32);
+  CheckCast(float_array, expected_date64);
+  CheckCast(double_array, expected_date64);
+
+  // Test truncation
+  auto float_trunc = ArrayFromJSON(float32(), "[1.5, 2.9, -1.5]");
+  auto expected_date32_trunc = ArrayFromJSON(date32(), "[1, 2, -1]");
+  CheckCast(float_trunc, expected_date32_trunc);
+}
+
 TEST(Cast, DurationToDuration) {
   struct DurationTypePair {
     std::shared_ptr<DataType> coarse, fine;

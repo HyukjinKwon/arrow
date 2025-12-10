@@ -3278,12 +3278,31 @@ class TestConvertMisc:
 
 
 def test_safe_cast_from_float_with_nans_to_int():
-    # TODO(kszucs): write tests for creating Date32 and Date64 arrays, see
-    #               ARROW-4258 and https://github.com/apache/arrow/pull/3395
     values = pd.Series([1, 2, None, 4])
     arr = pa.Array.from_pandas(values, type=pa.int32(), safe=True)
     expected = pa.array([1, 2, None, 4], type=pa.int32())
     assert arr.equals(expected)
+
+
+def test_safe_cast_from_float_with_nans_to_date():
+    # ARROW-4258: safe cast from float with NaNs to date32 and date64
+    values = pd.Series([1.0, 2.0, None, 4.0])
+    
+    # Test date32
+    arr32 = pa.Array.from_pandas(values, type=pa.date32(), safe=True)
+    expected32 = pa.array([1, 2, None, 4], type=pa.date32())
+    assert arr32.equals(expected32)
+    
+    # Test date64
+    arr64 = pa.Array.from_pandas(values, type=pa.date64(), safe=True)
+    expected64 = pa.array([1, 2, None, 4], type=pa.date64())
+    assert arr64.equals(expected64)
+    
+    # Test truncation behavior
+    values_trunc = pd.Series([1.5, 2.9, -1.5])
+    arr32_trunc = pa.Array.from_pandas(values_trunc, type=pa.date32(), safe=True)
+    expected32_trunc = pa.array([1, 2, -1], type=pa.date32())
+    assert arr32_trunc.equals(expected32_trunc)
 
 
 def _fully_loaded_dataframe_example():
