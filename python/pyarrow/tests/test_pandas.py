@@ -3285,7 +3285,6 @@ def test_safe_cast_from_float_with_nans_to_int():
 
 
 def test_safe_cast_from_float_with_nans_to_date():
-    # ARROW-4258: safe cast from float with NaNs to date32 and date64
     values = pd.Series([1.0, 2.0, None, 4.0])
     
     # Test date32
