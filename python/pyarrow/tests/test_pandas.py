@@ -3278,11 +3278,51 @@ class TestConvertMisc:
 
 
 def test_safe_cast_from_float_with_nans_to_int():
-    # TODO(kszucs): write tests for creating Date32 and Date64 arrays, see
-    #               ARROW-4258 and https://github.com/apache/arrow/pull/3395
     values = pd.Series([1, 2, None, 4])
     arr = pa.Array.from_pandas(values, type=pa.int32(), safe=True)
     expected = pa.array([1, 2, None, 4], type=pa.int32())
+    assert arr.equals(expected)
+
+
+def test_safe_cast_from_float_with_nans_to_date32():
+    # ARROW-4258: Date32 represents days since UNIX epoch (1970-01-01)
+    # Test with whole numbers
+    values = pd.Series([0.0, 100.0, None, 1000.0], dtype='float64')
+    arr = pa.Array.from_pandas(values, type=pa.date32(), safe=True)
+    expected = pa.array([0, 100, None, 1000], type=pa.date32())
+    assert arr.equals(expected)
+
+    # Test with fractional values - should truncate (not round)
+    values = pd.Series([1.1, 1.5, 1.9, -1.1, -1.5, -1.9], dtype='float64')
+    arr = pa.Array.from_pandas(values, type=pa.date32(), safe=True)
+    expected = pa.array([1, 1, 1, -1, -1, -1], type=pa.date32())
+    assert arr.equals(expected)
+
+    # Test with float32 as well
+    values = pd.Series([0.0, 50.7, 100.3, None], dtype='float32')
+    arr = pa.Array.from_pandas(values, type=pa.date32(), safe=True)
+    expected = pa.array([0, 50, 100, None], type=pa.date32())
+    assert arr.equals(expected)
+
+
+def test_safe_cast_from_float_with_nans_to_date64():
+    # ARROW-4258: Date64 represents milliseconds since UNIX epoch (1970-01-01)
+    # Test with whole numbers
+    values = pd.Series([0.0, 86400000.0, None, 1000000000.0], dtype='float64')
+    arr = pa.Array.from_pandas(values, type=pa.date64(), safe=True)
+    expected = pa.array([0, 86400000, None, 1000000000], type=pa.date64())
+    assert arr.equals(expected)
+
+    # Test with fractional milliseconds - should truncate (not round)
+    values = pd.Series([1000.1, 1000.5, 1000.9, -1000.1, -1000.5, -1000.9], dtype='float64')
+    arr = pa.Array.from_pandas(values, type=pa.date64(), safe=True)
+    expected = pa.array([1000, 1000, 1000, -1000, -1000, -1000], type=pa.date64())
+    assert arr.equals(expected)
+
+    # Test with float32 as well
+    values = pd.Series([0.0, 86400000.7, 172800000.3, None], dtype='float32')
+    arr = pa.Array.from_pandas(values, type=pa.date64(), safe=True)
+    expected = pa.array([0, 86400000, 172800000, None], type=pa.date64())
     assert arr.equals(expected)
 
 

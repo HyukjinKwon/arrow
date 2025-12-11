@@ -508,6 +508,14 @@ inline Status NumPyConverter::ConvertData<Date32Type>(std::shared_ptr<Buffer>* d
                                  type_, cast_options_, pool_, data));
       }
     }
+  } else if (dtype_->type_num == NPY_FLOAT) {
+    // Float values represent days since epoch, NaN represents null
+    Status s = StaticCastBuffer<float, int32_t>(**data, length_, pool_, data);
+    RETURN_NOT_OK(s);
+  } else if (dtype_->type_num == NPY_DOUBLE) {
+    // Double values represent days since epoch, NaN represents null
+    Status s = StaticCastBuffer<double, int32_t>(**data, length_, pool_, data);
+    RETURN_NOT_OK(s);
   } else {
     ARROW_ASSIGN_OR_RAISE(input_type, NumPyDtypeToArrow(dtype_));
     if (!input_type->Equals(*type_)) {
@@ -550,6 +558,14 @@ inline Status NumPyConverter::ConvertData<Date64Type>(std::shared_ptr<Buffer>* d
                                  type_, cast_options_, pool_, data));
       }
     }
+  } else if (dtype_->type_num == NPY_FLOAT) {
+    // Float values represent milliseconds since epoch, NaN represents null
+    Status s = StaticCastBuffer<float, int64_t>(**data, length_, pool_, data);
+    RETURN_NOT_OK(s);
+  } else if (dtype_->type_num == NPY_DOUBLE) {
+    // Double values represent milliseconds since epoch, NaN represents null
+    Status s = StaticCastBuffer<double, int64_t>(**data, length_, pool_, data);
+    RETURN_NOT_OK(s);
   } else {
     ARROW_ASSIGN_OR_RAISE(input_type, NumPyDtypeToArrow(dtype_));
     if (!input_type->Equals(*type_)) {
