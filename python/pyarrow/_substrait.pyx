@@ -34,10 +34,16 @@ else:
     import substrait.proto  # no-cython-lint
 
 
-# TODO GH-37235: Fix exception handling
 cdef CDeclaration _create_named_table_provider(
     dict named_args, const std_vector[c_string]& names, const CSchema& schema
-) noexcept:
+):
+    """
+    Create a table source declaration from a user-provided table_provider function.
+
+    This function is called by the Substrait execution engine when it encounters
+    a NamedTable relation. Any exceptions raised by the user's table_provider
+    function will be propagated and wrapped into a CResult by BindFunction.
+    """
     cdef:
         c_string c_name
         shared_ptr[CTable] c_in_table
@@ -51,11 +57,16 @@ cdef CDeclaration _create_named_table_provider(
         py_names.append(frombytes(c_name))
     py_schema = pyarrow_wrap_schema(make_shared[CSchema](schema))
 
+    # Call the user-provided table_provider function.
+    # Any exceptions will propagate and be caught by BoundFunction,
+    # which will convert them to CResult via RETURN_IF_PYERROR().
     py_table = named_args["provider"](py_names, py_schema)
+
     c_in_table = pyarrow_unwrap_table(py_table)
     c_tablesourceopts = make_shared[CTableSourceNodeOptions](c_in_table)
     c_input_node_opts = static_pointer_cast[CExecNodeOptions, CTableSourceNodeOptions](
         c_tablesourceopts)
+
     return CDeclaration(tobytes("table_source"),
                         no_c_inputs, c_input_node_opts)
 

@@ -328,6 +328,33 @@ struct BoundFunction<Return(PyObject*, Args...)> {
   OwnedRefNoGIL bound_arg_;
 };
 
+template <typename Return, typename... Args>
+struct BoundFunction<Result<Return>(PyObject*, Args...)> {
+  // We bind `cdef Result[Return] fn(object, ...)` to get a `Result<Return>(...)`
+  // where the Cython function can explicitly return errors or check for Python
+  // exceptions itself. This avoids double-wrapping Result<Result<Return>>.
+  using Unbound = Result<Return>(PyObject*, Args...);
+  using Bound = Result<Return>(Args...);
+
+  BoundFunction(Unbound* unbound, PyObject* bound_arg)
+      : unbound_(unbound), bound_arg_(bound_arg) {}
+
+  Result<Return> Invoke(Args... args) const {
+    PyAcquireGIL lock;
+    Result<Return> ret = unbound_(bound_arg_.obj(), std::forward<Args>(args)...);
+    // If the function already returned an error, propagate it
+    if (!ret.ok()) {
+      return ret;
+    }
+    // Check if a Python exception occurred but wasn't wrapped in Result
+    RETURN_IF_PYERROR();
+    return ret;
+  }
+
+  Unbound* unbound_;
+  OwnedRefNoGIL bound_arg_;
+};
+
 template <typename OutFn, typename Return, typename... Args>
 std::function<OutFn> BindFunction(Return (*unbound)(PyObject*, Args...),
                                   PyObject* bound_arg) {

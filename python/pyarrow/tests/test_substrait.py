@@ -244,11 +244,11 @@ def test_named_table_invalid_table_name():
 
     def table_provider(names, _):
         if not names:
-            raise Exception("No names provided")
+            raise RuntimeError("No names provided")
         elif names[0] == "t1":
             return test_table_1
         else:
-            raise Exception("Unrecognized table name")
+            raise RuntimeError("Unrecognized table name")
 
     substrait_query = """
     {
@@ -276,8 +276,8 @@ def test_named_table_invalid_table_name():
     """
 
     buf = pa._substrait._parse_json_plan(tobytes(substrait_query))
-    exec_message = "Invalid NamedTable Source"
-    with pytest.raises(ArrowInvalid, match=exec_message):
+    # The user's custom exception should be raised directly, not wrapped in ArrowInvalid
+    with pytest.raises(RuntimeError, match="Unrecognized table name"):
         substrait.run_query(buf, table_provider=table_provider)
 
 
