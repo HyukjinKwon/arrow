@@ -22,6 +22,8 @@
 #include <memory>
 
 #include "arrow/status.h"
+#include "arrow/util/logging.h"
+#include "arrow/util/utf8_internal.h"
 
 namespace arrow {
 
@@ -165,7 +167,8 @@ std::string TrimString(std::string value) {
 }
 
 bool AsciiEqualsCaseInsensitive(std::string_view left, std::string_view right) {
-  // TODO: ASCII validation
+  DCHECK(ValidateAscii(left)) << "AsciiEqualsCaseInsensitive requires ASCII input";
+  DCHECK(ValidateAscii(right)) << "AsciiEqualsCaseInsensitive requires ASCII input";
   if (left.size() != right.size()) {
     return false;
   }
@@ -179,7 +182,7 @@ bool AsciiEqualsCaseInsensitive(std::string_view left, std::string_view right) {
 }
 
 std::string AsciiToLower(std::string_view value) {
-  // TODO: ASCII validation
+  DCHECK(ValidateAscii(value)) << "AsciiToLower requires ASCII input";
   std::string result = std::string(value);
   std::transform(result.begin(), result.end(), result.begin(),
                  [](unsigned char c) { return std::tolower(c); });
@@ -187,7 +190,7 @@ std::string AsciiToLower(std::string_view value) {
 }
 
 std::string AsciiToUpper(std::string_view value) {
-  // TODO: ASCII validation
+  DCHECK(ValidateAscii(value)) << "AsciiToUpper requires ASCII input";
   std::string result = std::string(value);
   std::transform(result.begin(), result.end(), result.begin(),
                  [](unsigned char c) { return std::toupper(c); });
