@@ -142,6 +142,66 @@ TEST_F(TestAssertContainsNaN, DatumEqual) {
                                                             "[NaN]",
                                                         });
   AssertDatumsEqual(expected_chunked, actual_chunked);
+
+  // record batch
+  auto schema = ::arrow::schema({field("a", int32()), field("b", float64())});
+  auto expected_batch = RecordBatchFromJSON(schema, R"([
+    {"a": 1, "b": 3.14},
+    {"a": 2, "b": NaN}
+  ])");
+  auto actual_batch = RecordBatchFromJSON(schema, R"([
+    {"a": 1, "b": 3.14},
+    {"a": 2, "b": NaN}
+  ])");
+  AssertDatumsEqual(Datum(expected_batch), Datum(actual_batch));
+
+  // table
+  auto expected_table = TableFromJSON(schema, {R"([
+    {"a": 1, "b": 3.14},
+    {"a": 2, "b": NaN}
+  ])"});
+  auto actual_table = TableFromJSON(schema, {R"([
+    {"a": 1, "b": 3.14},
+    {"a": 2, "b": NaN}
+  ])"});
+  AssertDatumsEqual(Datum(expected_table), Datum(actual_table));
+}
+
+TEST_F(TestAssertContainsNaN, DatumApproxEqual) {
+  auto schema = ::arrow::schema({field("a", int32()), field("b", float64())});
+
+  // record batch with approximate equality
+  auto expected_batch = RecordBatchFromJSON(schema, R"([
+    {"a": 1, "b": 3.14159265},
+    {"a": 2, "b": 2.71828182}
+  ])");
+  auto actual_batch = RecordBatchFromJSON(schema, R"([
+    {"a": 1, "b": 3.14159260},
+    {"a": 2, "b": 2.71828180}
+  ])");
+  AssertDatumsApproxEqual(Datum(expected_batch), Datum(actual_batch));
+
+  // custom tolerance
+  auto opts = EqualOptions().atol(1e-7);
+  AssertDatumsApproxEqual(Datum(expected_batch), Datum(actual_batch), false, opts);
+
+  // table with approximate equality
+  auto expected_table = TableFromJSON(schema, {R"([
+    {"a": 1, "b": 1.0000001},
+    {"a": 2, "b": 2.0000001}
+  ])"});
+  auto actual_table = TableFromJSON(schema, {R"([
+    {"a": 1, "b": 1.0},
+    {"a": 2, "b": 2.0}
+  ])"});
+  AssertDatumsApproxEqual(Datum(expected_table), Datum(actual_table));
+
+  // custom tolerance for table
+  auto loose_tolerance = EqualOptions().atol(1e-8);
+  auto expected_table2 = TableFromJSON(schema, {R"([{"a": 1, "b": 1.00000000001}])"});
+  auto actual_table2 = TableFromJSON(schema, {R"([{"a": 1, "b": 1.0}])"});
+  AssertDatumsApproxEqual(Datum(expected_table2), Datum(actual_table2), false,
+                          loose_tolerance);
 }
 
 class TestTensorFromJSON : public ::testing::Test {};

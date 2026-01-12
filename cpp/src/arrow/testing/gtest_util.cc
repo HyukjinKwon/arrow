@@ -343,8 +343,16 @@ void AssertDatumsEqual(const Datum& expected, const Datum& actual, bool verbose,
       AssertChunkedEquivalent(*expected.chunked_array(), *actual.chunked_array(),
                               options);
       break;
+    case Datum::RECORD_BATCH:
+      AssertBatchesEqual(*expected.record_batch(), *actual.record_batch(),
+                         options.diff_sink() != nullptr, options);
+      break;
+    case Datum::TABLE:
+      AssertTablesEqual(*expected.table(), *actual.table(),
+                        /*same_chunk_layout=*/true, /*flatten=*/false, options);
+      break;
     default:
-      // TODO: Implement better print
+      // Fallback for any other Datum kinds (e.g. NONE)
       ASSERT_TRUE(actual.Equals(expected));
       break;
   }
@@ -371,8 +379,15 @@ void AssertDatumsApproxEqual(const Datum& expected, const Datum& actual, bool ve
       AssertChunkedApproxEquivalent(*expected_array, *actual_array, options);
       break;
     }
+    case Datum::RECORD_BATCH:
+      AssertBatchesApproxEqual(*expected.record_batch(), *actual.record_batch(), options);
+      break;
+    case Datum::TABLE:
+      AssertTablesApproxEqual(*expected.table(), *actual.table(),
+                              /*same_chunk_layout=*/true, /*flatten=*/false, options);
+      break;
     default:
-      // TODO: Implement better print
+      // Fallback for any other Datum kinds (e.g. NONE)
       ASSERT_TRUE(actual.Equals(expected));
       break;
   }
@@ -528,6 +543,14 @@ void AssertTablesEqual(const Table& expected, const Table& actual, bool same_chu
       }
     }
   }
+}
+
+void AssertTablesApproxEqual(const Table& expected, const Table& actual,
+                             bool same_chunk_layout, bool flatten,
+                             const EqualOptions& options) {
+  // Similar to RecordBatch::ApproxEquals, ensure atol is enabled for approximate
+  // comparison
+  AssertTablesEqual(expected, actual, same_chunk_layout, flatten, options.use_atol(true));
 }
 
 template <typename CompareFunctor>

@@ -293,6 +293,9 @@ ARROW_TESTING_EXPORT Result<std::optional<std::string>> PrintArrayDiff(
 ARROW_TESTING_EXPORT void AssertTablesEqual(
     const Table& expected, const Table& actual, bool same_chunk_layout = true,
     bool flatten = false, const EqualOptions& options = TestingEqualOptions());
+ARROW_TESTING_EXPORT void AssertTablesApproxEqual(
+    const Table& expected, const Table& actual, bool same_chunk_layout = true,
+    bool flatten = false, const EqualOptions& options = TestingEqualOptions());
 
 ARROW_TESTING_EXPORT void AssertDatumsEqual(
     const Datum& expected, const Datum& actual, bool verbose = false,
