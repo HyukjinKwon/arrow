@@ -21,7 +21,9 @@
 #include "arrow/array/concatenate.h"
 #include "arrow/chunked_array.h"
 #include "arrow/compute/api_vector.h"
+#include "arrow/compute/function.h"
 #include "arrow/compute/kernels/test_util_internal.h"
+#include "arrow/compute/registry.h"
 #include "arrow/testing/generator.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/util/checked_cast.h"
@@ -2070,5 +2072,243 @@ TEST_F(TestFillNullType, TestFillOnNullType) {
   this->AssertFillNullArray(FillNullBackward, this->array(R"([null, null])"),
                             this->array(R"([null, null])"));
 }
+
+// Tests for list types
+class TestReplaceList : public ::testing::Test {
+ protected:
+  std::shared_ptr<DataType> type() { return list(int32()); }
+
+  Datum mask_scalar(bool value) { return Datum(std::make_shared<BooleanScalar>(value)); }
+
+  Datum null_mask_scalar() {
+    auto scalar = std::make_shared<BooleanScalar>(true);
+    scalar->is_valid = false;
+    return Datum(std::move(scalar));
+  }
+
+  Datum scalar(const std::string& json) { return ScalarFromJSON(type(), json); }
+
+  std::shared_ptr<Array> array(const std::string& value) {
+    return ArrayFromJSON(type(), value);
+  }
+
+  std::shared_ptr<Array> mask(const std::string& value) {
+    return ArrayFromJSON(boolean(), value);
+  }
+
+  void Assert(const std::function<Result<Datum>(const Datum&, const Datum&, const Datum&,
+                                                ExecContext*)>& func,
+              const Datum& array, const Datum& mask, const Datum& replacements,
+              const Datum& expected) {
+    ASSERT_OK_AND_ASSIGN(auto actual, func(array, mask, replacements, nullptr));
+    ASSERT_OK(actual.make_array()->ValidateFull());
+    AssertDatumsEqual(expected, actual, /*verbose=*/true);
+  }
+};
+
+TEST_F(TestReplaceList, ReplaceWithMask) {
+  // Empty arrays
+  this->Assert(ReplaceWithMask, this->array("[]"), this->mask_scalar(false),
+               this->array("[]"), this->array("[]"));
+  this->Assert(ReplaceWithMask, this->array("[]"), this->mask_scalar(true),
+               this->array("[]"), this->array("[]"));
+  this->Assert(ReplaceWithMask, this->array("[]"), this->null_mask_scalar(),
+               this->array("[]"), this->array("[]"));
+
+  // Scalar mask with single element
+  this->Assert(ReplaceWithMask, this->array("[[1, 2, 3]]"), this->mask_scalar(false),
+               this->array("[]"), this->array("[[1, 2, 3]]"));
+  this->Assert(ReplaceWithMask, this->array("[[1, 2, 3]]"), this->mask_scalar(true),
+               this->array("[[4, 5]]"), this->array("[[4, 5]]"));
+  this->Assert(ReplaceWithMask, this->array("[[1, 2, 3]]"), this->null_mask_scalar(),
+               this->array("[]"), this->array("[null]"));
+
+  // Scalar mask with multiple elements
+  this->Assert(ReplaceWithMask, this->array("[[1], [2], [3]]"), this->mask_scalar(false),
+               this->scalar("[]"), this->array("[[1], [2], [3]]"));
+  this->Assert(ReplaceWithMask, this->array("[[1], [2], [3]]"), this->mask_scalar(true),
+               this->scalar("[7, 8, 9]"),
+               this->array("[[7, 8, 9], [7, 8, 9], [7, 8, 9]]"));
+
+  // Array mask - keep all
+  this->Assert(ReplaceWithMask, this->array("[[1, 2], [3, 4], [5, 6], [7, 8]]"),
+               this->mask("[false, false, false, false]"), this->array("[]"),
+               this->array("[[1, 2], [3, 4], [5, 6], [7, 8]]"));
+
+  // Array mask - replace all
+  this->Assert(ReplaceWithMask, this->array("[[1], [2], [3]]"),
+               this->mask("[true, true, true]"), this->array("[[10], [20], [30]]"),
+               this->array("[[10], [20], [30]]"));
+
+  // Array mask - mixed
+  this->Assert(ReplaceWithMask, this->array("[[1, 2], [3, 4], [5, 6]]"),
+               this->mask("[true, false, true]"), this->array("[[10, 20], [30, 40]]"),
+               this->array("[[10, 20], [3, 4], [30, 40]]"));
+
+  // With nulls in values
+  this->Assert(ReplaceWithMask, this->array("[[1], null, [3]]"),
+               this->mask("[false, false, true]"), this->array("[[99]]"),
+               this->array("[[1], null, [99]]"));
+
+  // With nulls in mask
+  this->Assert(ReplaceWithMask, this->array("[[1], [2], [3]]"),
+               this->mask("[false, null, true]"), this->array("[[99]]"),
+               this->array("[[1], null, [99]]"));
+
+  // With nulls in replacements
+  this->Assert(ReplaceWithMask, this->array("[[1], [2], [3]]"),
+               this->mask("[true, true, false]"), this->array("[null, [99]]"),
+               this->array("[null, [99], [3]]"));
+
+  // Empty lists
+  this->Assert(ReplaceWithMask, this->array("[[], [1, 2], []]"),
+               this->mask("[true, false, true]"), this->array("[[3, 4], [5]]"),
+               this->array("[[3, 4], [1, 2], [5]]"));
+}
+
+class TestReplaceLargeList : public ::testing::Test {
+ protected:
+  std::shared_ptr<DataType> type() { return large_list(int32()); }
+
+  Datum mask_scalar(bool value) { return Datum(std::make_shared<BooleanScalar>(value)); }
+
+  Datum null_mask_scalar() {
+    auto scalar = std::make_shared<BooleanScalar>(true);
+    scalar->is_valid = false;
+    return Datum(std::move(scalar));
+  }
+
+  Datum scalar(const std::string& json) { return ScalarFromJSON(type(), json); }
+
+  std::shared_ptr<Array> array(const std::string& value) {
+    return ArrayFromJSON(type(), value);
+  }
+
+  std::shared_ptr<Array> mask(const std::string& value) {
+    return ArrayFromJSON(boolean(), value);
+  }
+
+  void Assert(const std::function<Result<Datum>(const Datum&, const Datum&, const Datum&,
+                                                ExecContext*)>& func,
+              const Datum& array, const Datum& mask, const Datum& replacements,
+              const Datum& expected) {
+    ASSERT_OK_AND_ASSIGN(auto actual, func(array, mask, replacements, nullptr));
+    ASSERT_OK(actual.make_array()->ValidateFull());
+    AssertDatumsEqual(expected, actual, /*verbose=*/true);
+  }
+};
+
+TEST_F(TestReplaceLargeList, ReplaceWithMask) {
+  this->Assert(ReplaceWithMask, this->array("[]"), this->mask_scalar(false),
+               this->array("[]"), this->array("[]"));
+  this->Assert(ReplaceWithMask, this->array("[[1, 2, 3]]"), this->mask_scalar(true),
+               this->array("[[4, 5]]"), this->array("[[4, 5]]"));
+  this->Assert(ReplaceWithMask, this->array("[[1], [2], [3]]"),
+               this->mask("[true, false, true]"), this->array("[[10], [30]]"),
+               this->array("[[10], [2], [30]]"));
+}
+
+class TestReplaceFixedSizeList : public ::testing::Test {
+ protected:
+  std::shared_ptr<DataType> type() { return fixed_size_list(int32(), 2); }
+
+  Datum mask_scalar(bool value) { return Datum(std::make_shared<BooleanScalar>(value)); }
+
+  Datum null_mask_scalar() {
+    auto scalar = std::make_shared<BooleanScalar>(true);
+    scalar->is_valid = false;
+    return Datum(std::move(scalar));
+  }
+
+  Datum scalar(const std::string& json) { return ScalarFromJSON(type(), json); }
+
+  std::shared_ptr<Array> array(const std::string& value) {
+    return ArrayFromJSON(type(), value);
+  }
+
+  std::shared_ptr<Array> mask(const std::string& value) {
+    return ArrayFromJSON(boolean(), value);
+  }
+
+  void Assert(const std::function<Result<Datum>(const Datum&, const Datum&, const Datum&,
+                                                ExecContext*)>& func,
+              const Datum& array, const Datum& mask, const Datum& replacements,
+              const Datum& expected) {
+    ASSERT_OK_AND_ASSIGN(auto actual, func(array, mask, replacements, nullptr));
+    ASSERT_OK(actual.make_array()->ValidateFull());
+    AssertDatumsEqual(expected, actual, /*verbose=*/true);
+  }
+};
+
+TEST_F(TestReplaceFixedSizeList, ReplaceWithMask) {
+  this->Assert(ReplaceWithMask, this->array("[]"), this->mask_scalar(false),
+               this->array("[]"), this->array("[]"));
+  this->Assert(ReplaceWithMask, this->array("[[1, 2]]"), this->mask_scalar(true),
+               this->array("[[4, 5]]"), this->array("[[4, 5]]"));
+  this->Assert(ReplaceWithMask, this->array("[[1, 2], [3, 4], [5, 6]]"),
+               this->mask("[true, false, true]"), this->array("[[10, 20], [30, 40]]"),
+               this->array("[[10, 20], [3, 4], [30, 40]]"));
+  // With nulls
+  this->Assert(ReplaceWithMask, this->array("[[1, 2], null, [5, 6]]"),
+               this->mask("[false, false, true]"), this->array("[[99, 99]]"),
+               this->array("[[1, 2], null, [99, 99]]"));
+}
+
+// Tests for map type
+class TestReplaceMap : public ::testing::Test {
+ protected:
+  std::shared_ptr<DataType> type() { return map(utf8(), int32()); }
+
+  std::shared_ptr<Array> array(const std::string& value) {
+    return ArrayFromJSON(type(), value);
+  }
+
+  Datum mask_scalar(bool value) { return Datum(std::make_shared<BooleanScalar>(value)); }
+
+  Datum null_mask_scalar() {
+    auto scalar = std::make_shared<BooleanScalar>(true);
+    scalar->is_valid = false;
+    return Datum(std::move(scalar));
+  }
+
+  std::shared_ptr<Array> mask(const std::string& value) {
+    return ArrayFromJSON(boolean(), value);
+  }
+
+  void Assert(const std::function<Result<Datum>(const Datum&, const Datum&, const Datum&,
+                                                ExecContext*)>& func,
+              const Datum& array, const Datum& mask, const Datum& replacements,
+              const Datum& expected) {
+    ASSERT_OK_AND_ASSIGN(auto actual, func(array, mask, replacements, nullptr));
+    ASSERT_OK(actual.make_array()->ValidateFull());
+    AssertDatumsEqual(expected, actual, /*verbose=*/true);
+  }
+};
+
+TEST_F(TestReplaceMap, ReplaceWithMask) {
+  // Empty arrays
+  this->Assert(ReplaceWithMask, this->array("[]"), this->mask_scalar(false),
+               this->array("[]"), this->array("[]"));
+  this->Assert(ReplaceWithMask, this->array("[]"), this->mask_scalar(true),
+               this->array("[]"), this->array("[]"));
+
+  // Scalar mask with single element
+  this->Assert(ReplaceWithMask, this->array("[[]]"), this->mask_scalar(false),
+               this->array("[]"), this->array("[[]]"));
+  this->Assert(ReplaceWithMask, this->array("[[]]"), this->mask_scalar(true),
+               this->array("[[]]"), this->array("[[]]"));
+
+  // Array mask
+  this->Assert(ReplaceWithMask, this->array(R"([[["a", 1]], [["b", 2]], [["c", 3]]])"),
+               this->mask("[true, false, true]"),
+               this->array(R"([[["x", 10]], [["y", 20]]])"),
+               this->array(R"([[["x", 10]], [["b", 2]], [["y", 20]]])"));
+
+  // With nulls
+  this->Assert(ReplaceWithMask, this->array(R"([[["a", 1]], null, [["c", 3]]])"),
+               this->mask("[false, null, true]"), this->array(R"([[["z", 99]]])"),
+               this->array(R"([[["a", 1]], null, [["z", 99]]])"));
+}
+
 }  // namespace compute
 }  // namespace arrow

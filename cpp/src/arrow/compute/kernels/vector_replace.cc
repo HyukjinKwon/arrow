@@ -119,7 +119,8 @@ struct ReplaceMaskImpl {};
 
 template <typename Type>
 struct ReplaceMaskImpl<
-    Type, enable_if_t<!(is_base_binary_type<Type>::value || is_null_type<Type>::value)>> {
+    Type, enable_if_t<!(is_base_binary_type<Type>::value || is_null_type<Type>::value ||
+                        is_nested_type<Type>::value)>> {
   static Result<int64_t> ExecScalarMask(KernelContext* ctx, const ArraySpan& array,
                                         const BooleanScalar& mask, ExecValue replacements,
                                         int64_t replacements_offset, ExecResult* out) {
@@ -318,6 +319,101 @@ struct ReplaceMaskImpl<Type, enable_if_base_binary<Type>> {
     temp_output->type = array.type->GetSharedPtr();
     out->value = std::move(temp_output);
     return replacements_offset;
+  }
+};
+
+template <typename Type>
+struct ReplaceMaskImpl<Type, enable_if_nested<Type>> {
+  static Result<int64_t> ExecScalarMask(KernelContext* ctx, const ArraySpan& array,
+                                        const BooleanScalar& mask, ExecValue replacements,
+                                        int64_t replacements_offset, ExecResult* out) {
+    if (!mask.is_valid) {
+      // Output = null
+      ARROW_ASSIGN_OR_RAISE(
+          auto null_array,
+          MakeArrayOfNull(array.type->GetSharedPtr(), array.length, ctx->memory_pool()));
+      out->value = std::move(null_array->data());
+      return replacements_offset;
+    } else if (mask.value) {
+      // Output = replacement
+      if (replacements.is_scalar()) {
+        ARROW_ASSIGN_OR_RAISE(
+            auto replacement_array,
+            MakeArrayFromScalar(*replacements.scalar, array.length, ctx->memory_pool()));
+        out->value = std::move(replacement_array->data());
+      } else {
+        // Set to be a slice of replacements
+        std::shared_ptr<ArrayData> result = replacements.array.ToArrayData();
+        result->offset += replacements_offset;
+        result->length = array.length;
+        result->null_count = kUnknownNullCount;
+        out->value = result;
+      }
+      return replacements_offset + array.length;
+    } else {
+      // Output = input
+      out->value = array.ToArrayData();
+      return replacements_offset;
+    }
+  }
+
+  static Result<int64_t> ExecArrayMask(KernelContext* ctx, const ArraySpan& array,
+                                       const ArraySpan& mask, int64_t mask_offset,
+                                       ExecValue replacements,
+                                       int64_t replacements_offset, ExecResult* out) {
+    std::unique_ptr<ArrayBuilder> builder;
+    RETURN_NOT_OK(
+        MakeBuilderExactIndex(ctx->memory_pool(), array.type->GetSharedPtr(), &builder));
+    RETURN_NOT_OK(builder->Reserve(array.length));
+
+    const uint8_t* mask_values = mask.buffers[1].data;
+    const uint8_t* mask_bitmap = mask.buffers[0].data;
+
+    int64_t replacement_index = replacements_offset;
+    for (int64_t i = 0; i < array.length; ++i) {
+      const int64_t mask_index = mask.offset + mask_offset + i;
+      const bool mask_is_valid =
+          !mask_bitmap || bit_util::GetBit(mask_bitmap, mask_index);
+      const bool mask_value = bit_util::GetBit(mask_values, mask_index);
+
+      if (!mask_is_valid) {
+        // Mask is null = output null
+        RETURN_NOT_OK(builder->AppendNull());
+      } else if (mask_value) {
+        // Mask is true = output replacement
+        if (replacements.is_scalar()) {
+          const Scalar& replacement_scalar = *replacements.scalar;
+          if (!replacement_scalar.is_valid) {
+            RETURN_NOT_OK(builder->AppendNull());
+          } else {
+            RETURN_NOT_OK(builder->AppendScalar(replacement_scalar));
+          }
+        } else {
+          const ArraySpan& replacement_array = replacements.array;
+          if (replacement_array.buffers[0].data == nullptr ||
+              bit_util::GetBit(replacement_array.buffers[0].data,
+                               replacement_array.offset + replacement_index)) {
+            RETURN_NOT_OK(
+                builder->AppendArraySlice(replacement_array, replacement_index, 1));
+          } else {
+            RETURN_NOT_OK(builder->AppendNull());
+          }
+          replacement_index++;
+        }
+      } else {
+        // Mask is false = output original value
+        if (array.buffers[0].data == nullptr ||
+            bit_util::GetBit(array.buffers[0].data, array.offset + i)) {
+          RETURN_NOT_OK(builder->AppendArraySlice(array, i, 1));
+        } else {
+          RETURN_NOT_OK(builder->AppendNull());
+        }
+      }
+    }
+
+    ARROW_ASSIGN_OR_RAISE(auto result, builder->Finish());
+    out->value = std::move(result->data());
+    return replacement_index;
   }
 };
 
@@ -808,11 +904,12 @@ void AddKernel(Type::type type_id, std::shared_ptr<KernelSignature> signature,
   kernel.can_execute_chunkwise = false;
   if (is_fixed_width(type_id)) {
     kernel.null_handling = NullHandling::type::COMPUTED_PREALLOCATE;
+    kernel.mem_allocation = MemAllocation::type::PREALLOCATE;
   } else {
     kernel.can_write_into_slices = false;
     kernel.null_handling = NullHandling::type::COMPUTED_NO_PREALLOCATE;
+    kernel.mem_allocation = MemAllocation::type::NO_PREALLOCATE;
   }
-  kernel.mem_allocation = MemAllocation::type::PREALLOCATE;
   kernel.signature = std::move(signature);
   kernel.exec = std::move(exec);
   kernel.exec_chunked = exec_chunked;
@@ -862,7 +959,6 @@ void RegisterVectorFunction(FunctionRegistry* registry,
         GenerateTypeAgnosticVarBinaryBase<ChunkedFunctor, VectorKernel::ChunkedExec>(*ty),
         registry, func.get());
   }
-  // TODO: list types
   DCHECK_OK(registry->AddFunction(std::move(func)));
 
   // TODO(ARROW-9431): "replace_with_indices"
@@ -896,6 +992,49 @@ void RegisterVectorReplace(FunctionRegistry* registry) {
   {
     auto func = std::make_shared<VectorFunction>("replace_with_mask", Arity::Ternary(),
                                                  replace_with_mask_doc);
+    // Add list type kernels (specific to replace_with_mask ternary signature)
+    for (const auto type_id : {Type::LIST, Type::LARGE_LIST, Type::LIST_VIEW,
+                               Type::LARGE_LIST_VIEW, Type::FIXED_SIZE_LIST, Type::MAP}) {
+      ArrayKernelExec exec;
+      VectorKernel::ChunkedExec exec_chunked;
+      switch (type_id) {
+        case Type::LIST:
+          exec = ReplaceMask<ListType>::Exec;
+          exec_chunked = ReplaceMaskChunked<ListType>::Exec;
+          break;
+        case Type::LARGE_LIST:
+          exec = ReplaceMask<LargeListType>::Exec;
+          exec_chunked = ReplaceMaskChunked<LargeListType>::Exec;
+          break;
+        case Type::LIST_VIEW:
+          exec = ReplaceMask<ListViewType>::Exec;
+          exec_chunked = ReplaceMaskChunked<ListViewType>::Exec;
+          break;
+        case Type::LARGE_LIST_VIEW:
+          exec = ReplaceMask<LargeListViewType>::Exec;
+          exec_chunked = ReplaceMaskChunked<LargeListViewType>::Exec;
+          break;
+        case Type::FIXED_SIZE_LIST:
+          exec = ReplaceMask<FixedSizeListType>::Exec;
+          exec_chunked = ReplaceMaskChunked<FixedSizeListType>::Exec;
+          break;
+        case Type::MAP:
+          exec = ReplaceMask<MapType>::Exec;
+          exec_chunked = ReplaceMaskChunked<MapType>::Exec;
+          break;
+        default:
+          continue;
+      }
+      VectorKernel kernel({InputType(type_id), boolean(), InputType(type_id)}, FirstType,
+                          exec);
+      kernel.null_handling = NullHandling::COMPUTED_NO_PREALLOCATE;
+      kernel.mem_allocation = MemAllocation::NO_PREALLOCATE;
+      kernel.can_write_into_slices = false;
+      kernel.can_execute_chunkwise = false;
+      kernel.output_chunked = false;
+      kernel.exec_chunked = exec_chunked;
+      ARROW_CHECK_OK(func->AddKernel(std::move(kernel)));
+    }
     RegisterVectorFunction<ReplaceMask, ReplaceMaskChunked>(registry, func);
   }
   {
