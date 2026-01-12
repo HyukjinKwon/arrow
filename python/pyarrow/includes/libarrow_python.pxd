@@ -34,7 +34,7 @@ cdef extern from "arrow/python/csv.h" namespace "arrow::py::csv":
 cdef extern from "arrow/python/api.h" namespace "arrow::py":
     # Requires GIL
     CResult[shared_ptr[CDataType]] InferArrowType(
-        object obj, object mask, c_bool pandas_null_sentinels)
+        object obj, object mask, c_bool pandas_null_sentinels, c_bool make_unions)
 
 
 cdef extern from "arrow/python/api.h" namespace "arrow::py::internal":

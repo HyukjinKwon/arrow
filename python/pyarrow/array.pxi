@@ -543,7 +543,7 @@ def repeat(value, size, MemoryPool memory_pool=None):
     return pyarrow_wrap_array(c_array)
 
 
-def infer_type(values, mask=None, from_pandas=False):
+def infer_type(values, mask=None, from_pandas=False, make_unions=False):
     """
     Attempt to infer Arrow data type that can hold the passed Python
     sequence type in an Array object
@@ -556,6 +556,10 @@ def infer_type(values, mask=None, from_pandas=False):
         Optional exclusion mask where True marks null, False non-null.
     from_pandas : bool, default False
         Use pandas's NA/null sentinel values for type inference.
+    make_unions : bool, default False
+        If True, automatically create union types for mixed-type data
+        instead of raising an error. This allows for heterogeneous data
+        like [1, "hello", 3.14] to be inferred as a union type.
 
     Returns
     -------
@@ -564,11 +568,13 @@ def infer_type(values, mask=None, from_pandas=False):
     cdef:
         shared_ptr[CDataType] out
         c_bool use_pandas_sentinels = from_pandas
+        c_bool c_make_unions = make_unions
 
     if mask is not None and not isinstance(mask, np.ndarray):
         mask = np.array(mask, dtype=bool)
 
-    out = GetResultValue(InferArrowType(values, mask, use_pandas_sentinels))
+    out = GetResultValue(InferArrowType(
+        values, mask, use_pandas_sentinels, c_make_unions))
     return pyarrow_wrap_data_type(out)
 
 

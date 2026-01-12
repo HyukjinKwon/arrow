@@ -44,9 +44,11 @@ namespace py {
 /// \param[in] mask an optional mask where True values are null. May
 /// be nullptr
 /// \param[in] pandas_null_sentinels use pandas's null value markers
+/// \param[in] make_unions if true, create union types for mixed-type data
 ARROW_PYTHON_EXPORT
 Result<std::shared_ptr<arrow::DataType>> InferArrowType(PyObject* obj, PyObject* mask,
-                                                        bool pandas_null_sentinels);
+                                                        bool pandas_null_sentinels,
+                                                        bool make_unions = false);
 
 /// Checks whether the passed Python object is a boolean scalar
 ARROW_PYTHON_EXPORT

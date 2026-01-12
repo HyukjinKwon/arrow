@@ -515,9 +515,9 @@ class TypeInferrer {
   }
 
   Status GetType(std::shared_ptr<DataType>* out) {
-    // TODO(wesm): handling forming unions
     if (make_unions_) {
-      return Status::NotImplemented("Creating union types not yet supported");
+      // Form a union type from all observed types
+      return GetUnionType(out);
     }
 
     RETURN_NOT_OK(Validate());
@@ -615,7 +615,137 @@ class TypeInferrer {
   int64_t total_count() const { return total_count_; }
 
  protected:
+  Status GetUnionType(std::shared_ptr<DataType>* out) {
+    // pyarrow scalars cannot be mixed with other types even with unions
+    if (arrow_scalar_count_ > 0 && arrow_scalar_count_ + none_count_ != total_count_) {
+      return Status::Invalid(
+          "pyarrow scalars cannot be mixed "
+          "with other Python scalar values currently");
+    }
+
+    // If only NumPy dtypes and nulls, return the NumPy type directly (not a union)
+    if (numpy_dtype_count_ > 0 && numpy_dtype_count_ + none_count_ == total_count_) {
+      return NumPyDtypeToArrow(numpy_unifier_.current_dtype()).Value(out);
+    }
+
+    // Collect all non-null types observed
+    FieldVector union_fields;
+    std::vector<int8_t> type_codes;
+    int8_t type_code = 0;
+
+    // Helper lambda to add a type to the union
+    auto add_type = [&](int64_t count, const std::shared_ptr<DataType>& type,
+                        const std::string& name) {
+      if (count > 0) {
+        union_fields.push_back(field(name, type));
+        type_codes.push_back(type_code++);
+      }
+    };
+
+    // Handle NumPy dtypes: merge them into the appropriate type counts
+    // (same logic as the non-union path at lines 544-566)
+    if (numpy_dtype_count_ > 0) {
+      switch (numpy_unifier_.current_type_num()) {
+        case NPY_BOOL:
+          bool_count_ += numpy_dtype_count_;
+          break;
+        case NPY_INT8:
+        case NPY_INT16:
+        case NPY_INT32:
+        case NPY_INT64:
+        case NPY_UINT8:
+        case NPY_UINT16:
+        case NPY_UINT32:
+        case NPY_UINT64:
+          int_count_ += numpy_dtype_count_;
+          break;
+        case NPY_FLOAT32:
+        case NPY_FLOAT64:
+          float_count_ += numpy_dtype_count_;
+          break;
+        case NPY_DATETIME:
+          timestamp_micro_count_ += numpy_dtype_count_;
+          break;
+      }
+    }
+
+    // Add types in priority order (same order as the if-else chain)
+    if (list_count_ > 0) {
+      std::shared_ptr<DataType> value_type;
+      RETURN_NOT_OK(list_inferrer_->GetType(&value_type));
+      add_type(list_count_, list(value_type), "list");
+    }
+
+    if (struct_count_ > 0) {
+      std::shared_ptr<DataType> struct_type;
+      RETURN_NOT_OK(GetStructType(&struct_type));
+      add_type(struct_count_, struct_type, "struct");
+    }
+
+    if (decimal_count_ > 0) {
+      std::shared_ptr<DataType> decimal_type;
+      if (max_decimal_metadata_.precision() > Decimal128Type::kMaxPrecision) {
+        ARROW_ASSIGN_OR_RAISE(decimal_type,
+                              Decimal256Type::Make(max_decimal_metadata_.precision(),
+                                                   max_decimal_metadata_.scale()));
+      } else {
+        ARROW_ASSIGN_OR_RAISE(decimal_type,
+                              Decimal128Type::Make(max_decimal_metadata_.precision(),
+                                                   max_decimal_metadata_.scale()));
+      }
+      add_type(decimal_count_, decimal_type, "decimal");
+    }
+
+    add_type(float_count_, float64(), "float");
+    add_type(int_count_, int64(), "int");
+    add_type(date_count_, date32(), "date");
+    add_type(time_count_, time64(TimeUnit::MICRO), "time");
+
+    if (timestamp_micro_count_ > 0) {
+      add_type(timestamp_micro_count_, timestamp(TimeUnit::MICRO, timezone_),
+               "timestamp");
+    }
+
+    add_type(duration_count_, duration(TimeUnit::MICRO), "duration");
+    add_type(bool_count_, boolean(), "bool");
+    add_type(binary_count_, binary(), "binary");
+    add_type(unicode_count_, utf8(), "str");
+    add_type(interval_count_, month_day_nano_interval(), "interval");
+
+    if (arrow_scalar_count_ > 0) {
+      add_type(arrow_scalar_count_, scalar_type_, "scalar");
+    }
+
+    // Handle case where we only observed nulls
+    if (union_fields.empty()) {
+      *out = null();
+      return Status::OK();
+    }
+
+    // If only one type (plus nulls), just return that type
+    if (union_fields.size() == 1) {
+      *out = union_fields[0]->type();
+      return Status::OK();
+    }
+
+    // Create sparse union type
+    *out = sparse_union(union_fields, type_codes);
+    return Status::OK();
+  }
+
   Status Validate() const {
+    // Skip validation if we're making unions - mixed types are allowed
+    if (make_unions_) {
+      // Still need to validate nested inferrers
+      if (list_inferrer_) {
+        RETURN_NOT_OK(list_inferrer_->Validate());
+      }
+      for (const auto& it : struct_inferrers_) {
+        RETURN_NOT_OK(it.second.Validate());
+      }
+      return Status::OK();
+    }
+
     if (list_count_ > 0) {
       if (list_count_ + none_count_ != total_count_) {
         return Status::Invalid("cannot mix list and non-list, non-null values");
@@ -777,7 +907,8 @@ class TypeInferrer {
 
 // Non-exhaustive type inference
 Result<std::shared_ptr<DataType>> InferArrowType(PyObject* obj, PyObject* mask,
-                                                 bool pandas_null_sentinels) {
+                                                 bool pandas_null_sentinels,
+                                                 bool make_unions) {
   if (pandas_null_sentinels) {
     // ARROW-842: If pandas is not installed then null checks will be less
     // comprehensive, but that is okay.
@@ -785,7 +916,7 @@ Result<std::shared_ptr<DataType>> InferArrowType(PyObject* obj, PyObject* mask,
   }
 
   std::shared_ptr<DataType> out_type;
-  TypeInferrer inferrer(pandas_null_sentinels);
+  TypeInferrer inferrer(pandas_null_sentinels, /*validate_interval=*/100, make_unions);
   RETURN_NOT_OK(inferrer.VisitSequence(obj, mask));
   RETURN_NOT_OK(inferrer.GetType(&out_type));
   if (out_type == nullptr) {

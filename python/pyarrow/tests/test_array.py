@@ -3510,6 +3510,93 @@ def test_infer_type_masked():
     assert pa.infer_type([], mask=[]) == pa.null()
 
 
+def test_infer_type_union():
+    # Test union type inference with make_unions=True
+
+    # Without make_unions, mixed types pick one type (not a union)
+    ty = pa.infer_type([1, "hello", 3])
+    assert ty == pa.int64()  # Picks int, not a union
+
+    # With make_unions=True, should create union type
+    ty = pa.infer_type([1, "hello", 3], make_unions=True)
+    assert isinstance(ty, pa.UnionType)
+    assert ty.mode == "sparse"
+    assert len(ty) == 2  # int and str
+    # Check field names
+    field_names = [ty.field(i).name for i in range(len(ty))]
+    assert "int" in field_names
+    assert "str" in field_names
+
+    # Three types: int, float, str
+    ty = pa.infer_type([1, 3.14, "hello", 42, "world"], make_unions=True)
+    assert isinstance(ty, pa.UnionType)
+    assert len(ty) == 3
+    field_names = [ty.field(i).name for i in range(len(ty))]
+    assert "int" in field_names
+    assert "float" in field_names
+    assert "str" in field_names
+
+    # Union with nulls (nulls don't create separate type)
+    ty = pa.infer_type([1, None, "hello", None, 3.14], make_unions=True)
+    assert isinstance(ty, pa.UnionType)
+    assert len(ty) == 3  # int, str, float (nulls don't add a type)
+
+    # Single type with nulls shouldn't create union
+    ty = pa.infer_type([1, 2, 3, None], make_unions=True)
+    assert ty == pa.int64()
+
+    # Only nulls should return null type
+    ty = pa.infer_type([None, None, None], make_unions=True)
+    assert ty == pa.null()
+
+    # Union with boolean
+    ty = pa.infer_type([True, "hello", False, 42], make_unions=True)
+    assert isinstance(ty, pa.UnionType)
+    assert len(ty) == 3  # bool, str, int
+    field_names = [ty.field(i).name for i in range(len(ty))]
+    assert "bool" in field_names
+    assert "str" in field_names
+    assert "int" in field_names
+
+    # Union with nested lists
+    ty = pa.infer_type([[1, 2], "hello", [3, 4, 5]], make_unions=True)
+    assert isinstance(ty, pa.UnionType)
+    assert len(ty) == 2  # list, str
+    field_names = [ty.field(i).name for i in range(len(ty))]
+    assert "list" in field_names
+    assert "str" in field_names
+
+    # Homogeneous data should still work with and without make_unions
+    ty = pa.infer_type([1, 2, 3])
+    assert ty == pa.int64()
+    ty = pa.infer_type([1, 2, 3], make_unions=True)
+    assert ty == pa.int64()  # Single type, no union needed
+
+
+@pytest.mark.numpy
+def test_infer_type_union_numpy():
+    # Test union type inference with NumPy scalars
+    import numpy as np
+
+    # NumPy scalars mixed with Python types should create union
+    ty = pa.infer_type([np.int64(1), "hello", np.float64(3.14)], make_unions=True)
+    assert isinstance(ty, pa.UnionType)
+    assert len(ty) == 3  # int, float, str
+    field_names = [ty.field(i).name for i in range(len(ty))]
+    assert "int" in field_names
+    assert "float" in field_names
+    assert "str" in field_names
+
+    # Homogeneous NumPy scalars should not create union
+    ty = pa.infer_type([np.int64(1), np.int64(2), np.int64(3)], make_unions=True)
+    assert ty == pa.int64()
+    assert not isinstance(ty, pa.UnionType)
+
+    # PyArrow scalars mixed with other types should error (even with make_unions)
+    with pytest.raises(pa.ArrowInvalid, match="pyarrow scalars cannot be mixed"):
+        pa.infer_type([pa.scalar(1), "hello"], make_unions=True)
+
+
 @pytest.mark.numpy
 def test_array_masked():
     # ARROW-5208

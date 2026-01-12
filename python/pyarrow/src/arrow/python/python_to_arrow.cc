@@ -1269,7 +1269,8 @@ Result<std::shared_ptr<ChunkedArray>> ConvertPySequence(PyObject* obj, PyObject*
   // passed pa.string(), then we will error if we encounter any non-UTF8
   // value. If not, then we will allow the result to be a BinaryArray
   if (options.type == nullptr) {
-    ARROW_ASSIGN_OR_RAISE(options.type, InferArrowType(seq, mask, options.from_pandas));
+    ARROW_ASSIGN_OR_RAISE(options.type, InferArrowType(seq, mask, options.from_pandas,
+                                                       /*make_unions=*/false));
     options.strict = false;
   } else {
     options.strict = true;
