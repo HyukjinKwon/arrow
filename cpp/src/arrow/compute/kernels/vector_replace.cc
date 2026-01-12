@@ -390,8 +390,6 @@ struct ReplaceMaskChunked {
     const Datum& mask = batch[1];
     const Datum& replacements = batch[2];
 
-    // TODO(wesm): these assertions that the arguments cannot be ChunkedArray
-    // should happen someplace more generic, not here
     if (!mask.is_array() && !mask.is_scalar()) {
       return Status::Invalid("Mask must be array or scalar, not ", batch[1].ToString());
     }
