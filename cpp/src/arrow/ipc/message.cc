@@ -365,7 +365,8 @@ Result<std::unique_ptr<Message>> ReadMessage(std::shared_ptr<Buffer> metadata,
 
 Result<std::unique_ptr<Message>> ReadMessage(int64_t offset, int32_t metadata_length,
                                              io::RandomAccessFile* file,
-                                             const FieldsLoaderFunction& fields_loader) {
+                                             const FieldsLoaderFunction& fields_loader,
+                                             int64_t body_length) {
   std::unique_ptr<Message> result;
   auto listener = std::make_shared<AssignMessageDecoderListener>(&result);
   MessageDecoder decoder(listener);
@@ -375,15 +376,29 @@ Result<std::unique_ptr<Message>> ReadMessage(int64_t offset, int32_t metadata_le
                            decoder.next_required_size());
   }
 
-  // TODO(GH-48846): we should take a body_length just like ReadMessageAsync
-  // and read metadata + body in one go.
-  ARROW_ASSIGN_OR_RAISE(auto metadata, file->ReadAt(offset, metadata_length));
-  if (metadata->size() < metadata_length) {
-    return Status::Invalid("Expected to read ", metadata_length,
-                           " metadata bytes at offset ", offset, " but got ",
-                           metadata->size());
+  // Read metadata (and optionally body in one I/O operation if possible)
+  std::shared_ptr<Buffer> metadata_buffer;
+  if (body_length >= 0 && !fields_loader) {
+    // Read metadata and body together in a single I/O operation
+    ARROW_ASSIGN_OR_RAISE(metadata_buffer,
+                          file->ReadAt(offset, metadata_length + body_length));
+    if (metadata_buffer->size() < metadata_length + body_length) {
+      return Status::Invalid("Expected to read ", metadata_length + body_length,
+                             " bytes at offset ", offset, " but got ",
+                             metadata_buffer->size());
+    }
+  } else {
+    // Read metadata only
+    ARROW_ASSIGN_OR_RAISE(metadata_buffer, file->ReadAt(offset, metadata_length));
+    if (metadata_buffer->size() < metadata_length) {
+      return Status::Invalid("Expected to read ", metadata_length,
+                             " metadata bytes at offset ", offset, " but got ",
+                             metadata_buffer->size());
+    }
   }
-  ARROW_RETURN_NOT_OK(decoder.Consume(metadata));
+
+  // Process metadata
+  ARROW_RETURN_NOT_OK(decoder.Consume(SliceBuffer(metadata_buffer, 0, metadata_length)));
 
   switch (decoder.state()) {
     case MessageDecoder::State::INITIAL:
@@ -397,12 +412,18 @@ Result<std::unique_ptr<Message>> ReadMessage(int64_t offset, int32_t metadata_le
                              ", metadata length: ", metadata_length);
     case MessageDecoder::State::BODY: {
       std::shared_ptr<Buffer> body;
-      if (fields_loader) {
+      if (body_length >= 0 && !fields_loader) {
+        // Body was already read in the combined I/O operation
+        body = SliceBuffer(metadata_buffer, metadata_length, body_length);
+      } else if (fields_loader) {
+        // Read selective fields only
         ARROW_ASSIGN_OR_RAISE(
             body, AllocateBuffer(decoder.next_required_size(), default_memory_pool()));
         RETURN_NOT_OK(ReadFieldsSubset(offset, metadata_length, file, fields_loader,
-                                       metadata, decoder.next_required_size(), body));
+                                       SliceBuffer(metadata_buffer, 0, metadata_length),
+                                       decoder.next_required_size(), body));
       } else {
+        // Read body in a separate I/O operation
         ARROW_ASSIGN_OR_RAISE(
             body, file->ReadAt(offset + metadata_length, decoder.next_required_size()));
       }

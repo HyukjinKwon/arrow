@@ -3003,25 +3003,47 @@ void GetReadRecordBatchReadRanges(
 
   auto read_ranges = tracked->get_read_ranges();
 
-  // there are 3 read IOs before reading body:
-  // 1) read magic and footer length IO
-  // 2) read footer IO
-  // 3) read record batch metadata IO
-  EXPECT_EQ(read_ranges.size(), 3 + expected_body_read_lengths.size());
   const int32_t magic_size = static_cast<int>(strlen(ipc::internal::kArrowMagicBytes));
   // read magic and footer length IO
   auto file_end_size = magic_size + sizeof(int32_t);
   auto footer_length_offset = buffer->size() - file_end_size;
   auto footer_length = bit_util::FromLittleEndian(
       util::SafeLoadAs<int32_t>(buffer->data() + footer_length_offset));
-  EXPECT_EQ(read_ranges[0].length, file_end_size);
-  // read footer IO
-  EXPECT_EQ(read_ranges[1].length, footer_length);
-  // read record batch metadata.  The exact size is tricky to determine but it doesn't
-  // matter for this test and it should be smaller than the footer.
-  EXPECT_LE(read_ranges[2].length, footer_length);
-  for (uint32_t i = 0; i < expected_body_read_lengths.size(); i++) {
-    EXPECT_EQ(read_ranges[3 + i].length, expected_body_read_lengths[i]);
+
+  // With GH-48846 optimization, when loading all fields, metadata and body are read
+  // together. When loading selective fields, they remain separate for efficiency.
+  bool loading_all_fields = included_fields.empty();
+
+  if (loading_all_fields) {
+    // Optimized path: metadata + body in one I/O
+    // 1) read magic and footer length IO
+    // 2) read footer IO
+    // 3) read record batch metadata + body IO (combined)
+    EXPECT_EQ(read_ranges.size(), 3);
+    EXPECT_EQ(read_ranges[0].length, file_end_size);
+    EXPECT_EQ(read_ranges[1].length, footer_length);
+    // read record batch metadata + body (combined). Should be greater than footer.
+    EXPECT_GT(read_ranges[2].length, footer_length);
+    // Verify the combined read includes the expected body size
+    int64_t expected_body_total = 0;
+    for (auto len : expected_body_read_lengths) {
+      expected_body_total += len;
+    }
+    EXPECT_GE(read_ranges[2].length, expected_body_total);
+  } else {
+    // Selective loading: metadata and body remain separate
+    // 1) read magic and footer length IO
+    // 2) read footer IO
+    // 3) read record batch metadata IO
+    // 4+) read body IO(s) for selected fields
+    EXPECT_EQ(read_ranges.size(), 3 + expected_body_read_lengths.size());
+    EXPECT_EQ(read_ranges[0].length, file_end_size);
+    EXPECT_EQ(read_ranges[1].length, footer_length);
+    // read record batch metadata (should be smaller than footer)
+    EXPECT_LE(read_ranges[2].length, footer_length);
+    for (uint32_t i = 0; i < expected_body_read_lengths.size(); i++) {
+      EXPECT_EQ(read_ranges[3 + i].length, expected_body_read_lengths[i]);
+    }
   }
 }
 
@@ -3171,7 +3193,11 @@ class PreBufferingTest : public ::testing::TestWithParam<bool> {
         metadata_reads++;
       }
     }
-    ASSERT_EQ(metadata_reads, reader_->num_record_batches() - num_indices_pre_buffered);
+    // With GH-48846 optimization, metadata and body are read together for non-cached
+    // batches. For pre-buffered batches, only the body is read (metadata was already
+    // cached during pre-buffering). All these reads are large (> kMaxMetadataSizeBytes).
+    // Therefore: all batches result in one large read each.
+    ASSERT_EQ(metadata_reads, 0);
     ASSERT_EQ(data_reads, reader_->num_record_batches());
   }
 

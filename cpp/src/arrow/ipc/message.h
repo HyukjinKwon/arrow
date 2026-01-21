@@ -462,12 +462,16 @@ using FieldsLoaderFunction = std::function<Status(const void*, io::RandomAccessF
 /// \param[in] metadata_length the total number of bytes to read from file
 /// \param[in] file the seekable file interface to read from
 /// \param[in] fields_loader the function for loading subset of fields from the given file
+/// \param[in] body_length the expected body length. If negative, the body length
+/// will be determined after reading the metadata (requiring a second I/O operation).
+/// If non-negative and fields_loader is not provided, metadata and body will be read
+/// in a single I/O operation for better performance.
 /// \return the message read
 
 ARROW_EXPORT
 Result<std::unique_ptr<Message>> ReadMessage(
     const int64_t offset, const int32_t metadata_length, io::RandomAccessFile* file,
-    const FieldsLoaderFunction& fields_loader = {});
+    const FieldsLoaderFunction& fields_loader = {}, int64_t body_length = -1);
 
 /// \brief Read encapsulated RPC message from cached buffers
 ///

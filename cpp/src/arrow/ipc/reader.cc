@@ -1197,8 +1197,9 @@ Result<std::unique_ptr<Message>> ReadMessageFromBlock(
     const FileBlock& block, io::RandomAccessFile* file,
     const FieldsLoaderFunction& fields_loader) {
   RETURN_NOT_OK(CheckAligned(block));
-  ARROW_ASSIGN_OR_RAISE(auto message, ReadMessage(block.offset, block.metadata_length,
-                                                  file, fields_loader));
+  ARROW_ASSIGN_OR_RAISE(
+      auto message, ReadMessage(block.offset, block.metadata_length, file, fields_loader,
+                                block.body_length));
   return CheckBodyLength(std::move(message), block);
 }
 
