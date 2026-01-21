@@ -45,12 +45,8 @@
 #include "arrow/util/logging_internal.h"
 #include "arrow/util/macros.h"
 #include "arrow/util/range.h"
+#include "arrow/util/ree_util.h"
 #include "arrow/util/thread_pool.h"
-
-// TODO(GH-37221): Remove these ifdef checks when compute dependency is removed
-#ifdef ARROW_COMPUTE
-#  include "arrow/compute/api_vector.h"
-#endif
 
 namespace arrow {
 
@@ -472,7 +468,6 @@ TEST_F(TestSchemaExport, Union) {
              {ARROW_FLAG_NULLABLE});
 }
 
-#ifdef ARROW_COMPUTE
 TEST_F(TestSchemaExport, RunEndEncoded) {
   TestNested(run_end_encoded(int16(), uint8()), {"+r", "s", "C"},
              {"", "run_ends", "values"}, {ARROW_FLAG_NULLABLE, 0, ARROW_FLAG_NULLABLE});
@@ -484,7 +479,6 @@ TEST_F(TestSchemaExport, RunEndEncoded) {
              {"", "run_ends", "values", "item"},
              {ARROW_FLAG_NULLABLE, 0, ARROW_FLAG_NULLABLE, ARROW_FLAG_NULLABLE});
 }
-#endif
 
 std::string GetIndexFormat(Type::type type_id) {
   switch (type_id) {
@@ -1080,15 +1074,15 @@ TEST_F(TestArrayExport, Union) {
   TestNested(type, data);
 }
 
-#ifdef ARROW_COMPUTE
+// Helper to create a RunEndEncoded array from JSON for testing
 Result<std::shared_ptr<Array>> REEFromJSON(const std::shared_ptr<DataType>& ree_type,
                                            const std::string& json) {
   auto ree_type_ptr = checked_cast<const RunEndEncodedType*>(ree_type.get());
   auto array = ArrayFromJSON(ree_type_ptr->value_type(), json);
-  ARROW_ASSIGN_OR_RAISE(
-      auto datum,
-      RunEndEncode(array, compute::RunEndEncodeOptions{ree_type_ptr->run_end_type()}));
-  return datum.make_array();
+  ARROW_ASSIGN_OR_RAISE(auto array_data, ree_util::RunEndEncodeArray(
+                                             array->data(), ree_type_ptr->run_end_type(),
+                                             default_memory_pool()));
+  return MakeArray(array_data);
 }
 
 TEST_F(TestArrayExport, RunEndEncoded) {
@@ -1108,7 +1102,6 @@ TEST_F(TestArrayExport, RunEndEncodedSliced) {
   };
   TestNested(factory);
 }
-#endif
 
 TEST_F(TestArrayExport, Dictionary) {
   {
@@ -1432,7 +1425,6 @@ class TestDeviceArrayExport : public ::testing::Test {
     return [=]() { return ToDevice(mm, *ArrayFromJSON(type, json)->data()); };
   }
 
-#ifdef ARROW_COMPUTE
   static std::function<Result<std::shared_ptr<Array>>()> JSONREEArrayFactory(
       const std::shared_ptr<MemoryManager>& mm, std::shared_ptr<DataType> type,
       const char* json) {
@@ -1441,7 +1433,6 @@ class TestDeviceArrayExport : public ::testing::Test {
       return ToDevice(mm, *result->data());
     };
   }
-#endif
 
   template <typename ArrayFactory, typename ExportCheckFunc>
   void TestWithArrayFactory(ArrayFactory&& factory, ExportCheckFunc&& check_func) {
@@ -1680,7 +1671,6 @@ TEST_F(TestDeviceArrayExport, Union) {
   TestNested(mm, type, data);
 }
 
-#ifdef ARROW_COMPUTE
 TEST_F(TestDeviceArrayExport, RunEndEncoded) {
   std::shared_ptr<Device> device = std::make_shared<MyDevice>(1);
   auto mm = device->default_memory_manager();
@@ -1689,7 +1679,6 @@ TEST_F(TestDeviceArrayExport, RunEndEncoded) {
   const char* data = "[1, null, 2, 2, 4, 5]";
   TestNested(JSONREEArrayFactory(mm, type, data));
 }
-#endif
 
 TEST_F(TestDeviceArrayExport, Extension) {
   std::shared_ptr<Device> device = std::make_shared<MyDevice>(1);
@@ -2186,14 +2175,12 @@ TEST_F(TestSchemaImport, Map) {
   CheckImport(expected);
 }
 
-#ifdef ARROW_COMPUTE
 TEST_F(TestSchemaImport, RunEndEncoded) {
   FillPrimitive(AddChild(), "s", "run_ends");
   FillPrimitive(AddChild(), "I", "values");
   FillRunEndEncoded("+r");
   CheckImport(run_end_encoded(int16(), uint32()));
 }
-#endif
 
 TEST_F(TestSchemaImport, Dictionary) {
   FillPrimitive(AddChild(), "u");
@@ -3175,7 +3162,6 @@ TEST_F(TestArrayImport, Struct) {
   CheckImport(expected);
 }
 
-#ifdef ARROW_COMPUTE
 TEST_F(TestArrayImport, RunEndEncoded) {
   FillPrimitive(AddChild(), 5, 0, 0, run_ends_buffers5);
   FillPrimitive(AddChild(), 5, 0, 0, primitive_buffers_no_nulls5);
@@ -3218,7 +3204,6 @@ TEST_F(TestArrayImport, RunEndEncodedWithOffset) {
   ASSERT_OK_AND_ASSIGN(expected, REEFromJSON(ree_type, "[-2.0, -2.0, 3.0, 3.0]"));
   CheckImport(expected);
 }
-#endif
 
 TEST_F(TestArrayImport, SparseUnion) {
   auto type = sparse_union({field("strs", utf8()), field("ints", int8())}, {43, 42});
@@ -3749,12 +3734,10 @@ TEST_F(TestSchemaRoundtrip, Union) {
   TestWithTypeFactory([&]() { return dense_union({f1, f2}, type_codes); });
 }
 
-#ifdef ARROW_COMPUTE
 TEST_F(TestSchemaRoundtrip, RunEndEncoded) {
   TestWithTypeFactory([]() { return run_end_encoded(int16(), float32()); });
   TestWithTypeFactory([]() { return run_end_encoded(int32(), list(float32())); });
 }
-#endif
 
 TEST_F(TestSchemaRoundtrip, Dictionary) {
   for (auto index_ty : all_dictionary_index_types()) {
@@ -4104,7 +4087,6 @@ TEST_F(TestArrayRoundtrip, Union) {
   }
 }
 
-#ifdef ARROW_COMPUTE
 TEST_F(TestArrayRoundtrip, RunEndEncoded) {
   {
     auto factory = []() -> Result<std::shared_ptr<Array>> {
@@ -4130,7 +4112,6 @@ TEST_F(TestArrayRoundtrip, RunEndEncoded) {
     TestWithArrayFactory(factory);
   }
 }
-#endif
 
 TEST_F(TestArrayRoundtrip, Dictionary) {
   {
