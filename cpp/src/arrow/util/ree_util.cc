@@ -28,6 +28,7 @@
 #include "arrow/status.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
+#include "arrow/util/logging.h"
 
 namespace arrow {
 namespace ree_util {
@@ -125,7 +126,7 @@ int64_t LogicalNullCount(const ArraySpan& span) {
   if (type_id == Type::INT32) {
     return LogicalNullCount<int32_t>(span);
   }
-  DCHECK_EQ(type_id, Type::INT64);
+  ARROW_DCHECK_EQ(type_id, Type::INT64);
   return LogicalNullCount<int64_t>(span);
 }
 
@@ -142,7 +143,7 @@ Status ValidateRunEndEncodedChildren(const RunEndEncodedType& type,
       return ValidateRunEndEncodedChildren<int32_t>(
           type, logical_length, run_ends_data, values_data, null_count, logical_offset);
     default:
-      DCHECK_EQ(type.run_end_type()->id(), Type::INT64);
+      ARROW_DCHECK_EQ(type.run_end_type()->id(), Type::INT64);
       return ValidateRunEndEncodedChildren<int64_t>(
           type, logical_length, run_ends_data, values_data, null_count, logical_offset);
   }
@@ -156,7 +157,7 @@ int64_t FindPhysicalIndex(const ArraySpan& span, int64_t i, int64_t absolute_off
   if (type_id == Type::INT32) {
     return internal::FindPhysicalIndex<int32_t>(span, i, absolute_offset);
   }
-  DCHECK_EQ(type_id, Type::INT64);
+  ARROW_DCHECK_EQ(type_id, Type::INT64);
   return internal::FindPhysicalIndex<int64_t>(span, i, absolute_offset);
 }
 
@@ -168,7 +169,7 @@ int64_t FindPhysicalLength(const ArraySpan& span) {
   if (type_id == Type::INT32) {
     return internal::FindPhysicalLength<int32_t>(span);
   }
-  DCHECK_EQ(type_id, Type::INT64);
+  ARROW_DCHECK_EQ(type_id, Type::INT64);
   return internal::FindPhysicalLength<int64_t>(span);
 }
 
@@ -186,7 +187,7 @@ std::pair<int64_t, int64_t> FindPhysicalRange(const ArraySpan& span, int64_t off
     return internal::FindPhysicalRange<int32_t>(run_ends, run_ends_span.length, length,
                                                 offset);
   }
-  DCHECK_EQ(type_id, Type::INT64);
+  ARROW_DCHECK_EQ(type_id, Type::INT64);
   auto* run_ends = run_ends_span.GetValues<int64_t>(1);
   return internal::FindPhysicalRange<int64_t>(run_ends, run_ends_span.length, length,
                                               offset);
@@ -224,7 +225,7 @@ Result<std::shared_ptr<ArrayData>> RunEndEncodeImplExec(const ArraySpan& input_a
   std::tie(num_valid_runs, num_output_runs, data_buffer_size) =
       counting_loop.CountNumberOfRuns();
   const auto physical_null_count = num_output_runs - num_valid_runs;
-  DCHECK(!has_validity_buffer || physical_null_count > 0)
+  ARROW_DCHECK(!has_validity_buffer || physical_null_count > 0)
       << "has_validity_buffer is expected to imply physical_null_count > 0";
 
   ARROW_ASSIGN_OR_RAISE(auto output_array_data,
@@ -244,7 +245,7 @@ Result<std::shared_ptr<ArrayData>> RunEndEncodeImplExec(const ArraySpan& input_a
   internal::RunEndEncodingLoop<RunEndType, ValueType, has_validity_buffer> writing_loop(
       input_array, output_values_array_data, output_run_ends);
   [[maybe_unused]] int64_t num_written_runs = writing_loop.WriteEncodedRuns();
-  DCHECK_EQ(num_written_runs, num_output_runs);
+  ARROW_DCHECK_EQ(num_written_runs, num_output_runs);
 
   return output_array_data;
 }
@@ -303,9 +304,9 @@ namespace internal {
 /// \pre 0 <= i < array_span.length()
 template <typename RunEndCType>
 int64_t FindPhysicalIndexImpl(PhysicalIndexFinder<RunEndCType>& self, int64_t i) {
-  DCHECK_LT(i, self.array_span.length);
+  ARROW_DCHECK_LT(i, self.array_span.length);
   const int64_t run_ends_size = ree_util::RunEndsArray(self.array_span).length;
-  DCHECK_LT(self.last_physical_index, run_ends_size);
+  ARROW_DCHECK_LT(self.last_physical_index, run_ends_size);
   // This access to self.run_ends[last_physical_index] is always safe because:
   // 1. 0 <= i < array_span.length() implies there is at least one run and the initial
   //    value 0 will be safe to index with.
@@ -323,20 +324,20 @@ int64_t FindPhysicalIndexImpl(PhysicalIndexFinder<RunEndCType>& self, int64_t i)
     const int64_t j = ree_util::internal::FindPhysicalIndex<RunEndCType>(
         self.run_ends, /*run_ends_size=*/self.last_physical_index, i,
         self.array_span.offset);
-    DCHECK_LT(j, self.last_physical_index);
+    ARROW_DCHECK_LT(j, self.last_physical_index);
     return self.last_physical_index = j;
   }
 
   // last_physical_index is not an upper-bound, and the logical index i MUST be
   // in the runs that follow it. Since i is a valid logical index, we know that at least
   // one extra run is present.
-  DCHECK_LT(self.last_physical_index + 1, run_ends_size);
+  ARROW_DCHECK_LT(self.last_physical_index + 1, run_ends_size);
   const int64_t min_physical_index = self.last_physical_index + 1;
 
   const int64_t j = ree_util::internal::FindPhysicalIndex<RunEndCType>(
       /*run_ends=*/self.run_ends + min_physical_index,
       /*run_ends_size=*/run_ends_size - min_physical_index, i, self.array_span.offset);
-  DCHECK_LT(min_physical_index + j, run_ends_size);
+  ARROW_DCHECK_LT(min_physical_index + j, run_ends_size);
   return self.last_physical_index = min_physical_index + j;
 }
 
@@ -360,7 +361,7 @@ Result<std::shared_ptr<Buffer>> AllocateValuesBuffer(int64_t length, const DataT
   } else if (is_fixed_width(type.id())) {
     return AllocateBuffer(length * type.byte_width(), pool);
   } else {
-    DCHECK(is_base_binary_like(type.id()));
+    ARROW_DCHECK(is_base_binary_like(type.id()));
     return AllocateBuffer(data_buffer_size, pool);
   }
 }
@@ -368,7 +369,7 @@ Result<std::shared_ptr<Buffer>> AllocateValuesBuffer(int64_t length, const DataT
 Result<std::shared_ptr<ArrayData>> PreallocateRunEndsArray(
     const std::shared_ptr<DataType>& run_end_type, int64_t physical_length,
     MemoryPool* pool) {
-  DCHECK(is_run_end_type(run_end_type->id()));
+  ARROW_DCHECK(is_run_end_type(run_end_type->id()));
   ARROW_ASSIGN_OR_RAISE(
       auto run_ends_buffer,
       AllocateBuffer(physical_length * run_end_type->byte_width(), pool));
@@ -399,7 +400,7 @@ Result<std::shared_ptr<ArrayData>> PreallocateValuesArray(
   }
   auto data = ArrayData::Make(value_type, length, std::move(values_data_buffers),
                               kUnknownNullCount);
-  DCHECK(!(has_validity_buffer && length > 0) || data->buffers[0]);
+  ARROW_DCHECK(!(has_validity_buffer && length > 0) || data->buffers[0]);
   return data;
 }
 
@@ -419,8 +420,8 @@ Result<std::shared_ptr<ArrayData>> PreallocateREEArray(
 }
 
 void WriteSingleRunEnd(ArrayData* run_ends_data, int64_t run_end) {
-  DCHECK_GT(run_end, 0);
-  DCHECK(is_run_end_type(run_ends_data->type->id()));
+  ARROW_DCHECK_GT(run_end, 0);
+  ARROW_DCHECK(is_run_end_type(run_ends_data->type->id()));
   auto* output_run_ends = run_ends_data->template GetMutableValues<uint8_t>(1);
   switch (run_ends_data->type->id()) {
     case Type::INT16:
@@ -430,7 +431,7 @@ void WriteSingleRunEnd(ArrayData* run_ends_data, int64_t run_end) {
       *reinterpret_cast<int32_t*>(output_run_ends) = static_cast<int32_t>(run_end);
       break;
     default:
-      DCHECK_EQ(run_ends_data->type->id(), Type::INT64);
+      ARROW_DCHECK_EQ(run_ends_data->type->id(), Type::INT64);
       *reinterpret_cast<int64_t*>(output_run_ends) = static_cast<int64_t>(run_end);
       break;
   }
@@ -464,7 +465,7 @@ Status ValidateRunEndType(const std::shared_ptr<DataType>& run_end_type,
       run_end_max = std::numeric_limits<int32_t>::max();
       break;
     default:
-      DCHECK_EQ(run_end_type->id(), Type::INT64);
+      ARROW_DCHECK_EQ(run_end_type->id(), Type::INT64);
       break;
   }
   if (input_length < 0 || input_length > run_end_max) {

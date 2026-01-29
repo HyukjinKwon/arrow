@@ -376,20 +376,22 @@ void RegisterVectorRunEndEncode(FunctionRegistry* registry) {
   // cannot be encoded as a single run in the output. This is a conscious trade-off as
   // trying to solve this corner-case would complicate the implementation,
   // require reallocations, and could create surprising behavior for users of this API.
-  auto add_kernel = [&function](Type::type type_id) {
-    auto sig = KernelSignature::Make({InputType(match::SameTypeId(type_id))},
-                                     OutputType(RunEndEncodeExec::ResolveOutputType));
-    auto exec = GenerateREEKernelExec<RunEndEncodeExec>(type_id);
-    VectorKernel kernel(sig, exec, RunEndEncodeInit);
-    // A REE has null_count=0, so no need to allocate a validity bitmap for them.
-    kernel.null_handling = NullHandling::OUTPUT_NOT_NULL;
-    DCHECK_OK(function->AddKernel(std::move(kernel)));
-  };
+  // Use flexible matcher for REE value types (any non-nested type except Null)
+  auto sig = KernelSignature::Make({InputType(match::REEValue())},
+                                   OutputType(RunEndEncodeExec::ResolveOutputType));
+  auto exec = GenerateREEKernelExec<RunEndEncodeExec>(Type::NA);
+  VectorKernel kernel(sig, exec, RunEndEncodeInit);
+  // A REE has null_count=0, so no need to allocate a validity bitmap for them.
+  kernel.null_handling = NullHandling::OUTPUT_NOT_NULL;
+  DCHECK_OK(function->AddKernel(std::move(kernel)));
 
-  add_kernel(Type::NA);
-#define ADD_REE_KERNEL(TYPE_CLASS, TYPE_ENUM) add_kernel(Type::TYPE_ENUM);
-  ARROW_REE_SUPPORTED_TYPES(ADD_REE_KERNEL)
-#undef ADD_REE_KERNEL
+  // Also support Null type explicitly
+  sig = KernelSignature::Make({InputType(Type::NA)},
+                              OutputType(RunEndEncodeExec::ResolveOutputType));
+  exec = GenerateREEKernelExec<RunEndEncodeExec>(Type::NA);
+  kernel = VectorKernel(sig, exec, RunEndEncodeInit);
+  kernel.null_handling = NullHandling::OUTPUT_NOT_NULL;
+  DCHECK_OK(function->AddKernel(std::move(kernel)));
 
   DCHECK_OK(registry->AddFunction(std::move(function)));
 }
@@ -398,22 +400,16 @@ void RegisterVectorRunEndDecode(FunctionRegistry* registry) {
   auto function = std::make_shared<VectorFunction>("run_end_decode", Arity::Unary(),
                                                    run_end_decode_doc);
 
-  auto add_kernel = [&function](Type::type type_id) {
-    for (const auto& run_end_type_id : {Type::INT16, Type::INT32, Type::INT64}) {
-      auto exec = GenerateREEKernelExec<RunEndDecodeExec>(type_id);
-      auto input_type_matcher = match::RunEndEncoded(match::SameTypeId(run_end_type_id),
-                                                     match::SameTypeId(type_id));
-      auto sig = KernelSignature::Make({InputType(std::move(input_type_matcher))},
-                                       OutputType(RunEndDecodeExec::ResolveOutputType));
-      VectorKernel kernel(sig, exec);
-      DCHECK_OK(function->AddKernel(std::move(kernel)));
-    }
-  };
-
-  add_kernel(Type::NA);
-#define ADD_REE_KERNEL(TYPE_CLASS, TYPE_ENUM) add_kernel(Type::TYPE_ENUM);
-  ARROW_REE_SUPPORTED_TYPES(ADD_REE_KERNEL)
-#undef ADD_REE_KERNEL
+  for (const auto& run_end_type_id : {Type::INT16, Type::INT32, Type::INT64}) {
+    auto exec = GenerateREEKernelExec<RunEndDecodeExec>(Type::NA);
+    // Use flexible matcher for REE value types (any non-nested type except Null)
+    auto input_type_matcher =
+        match::RunEndEncoded(match::SameTypeId(run_end_type_id), match::REEValue());
+    auto sig = KernelSignature::Make({InputType(std::move(input_type_matcher))},
+                                     OutputType(RunEndDecodeExec::ResolveOutputType));
+    VectorKernel kernel(sig, exec);
+    DCHECK_OK(function->AddKernel(std::move(kernel)));
+  }
 
   DCHECK_OK(registry->AddFunction(std::move(function)));
 }

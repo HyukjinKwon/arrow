@@ -31,6 +31,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "arrow/c/util_internal.h"
+#include "arrow/json/from_string.h"
 #include "arrow/memory_pool.h"
 #include "arrow/testing/builder.h"
 #include "arrow/testing/extension_type.h"
@@ -1074,21 +1075,10 @@ TEST_F(TestArrayExport, Union) {
   TestNested(type, data);
 }
 
-// Helper to create a RunEndEncoded array from JSON for testing
-Result<std::shared_ptr<Array>> REEFromJSON(const std::shared_ptr<DataType>& ree_type,
-                                           const std::string& json) {
-  auto ree_type_ptr = checked_cast<const RunEndEncodedType*>(ree_type.get());
-  auto array = ArrayFromJSON(ree_type_ptr->value_type(), json);
-  ARROW_ASSIGN_OR_RAISE(auto array_data, ree_util::RunEndEncodeArray(
-                                             array->data(), ree_type_ptr->run_end_type(),
-                                             default_memory_pool()));
-  return MakeArray(array_data);
-}
-
 TEST_F(TestArrayExport, RunEndEncoded) {
   auto factory = []() {
-    return REEFromJSON(run_end_encoded(int32(), int8()),
-                       "[1, 2, 2, 3, null, null, null, 4]");
+    return ArrayFromJSON(run_end_encoded(int32(), int8()),
+                         "[1, 2, 2, 3, null, null, null, 4]");
   };
   TestNested(factory);
 }
@@ -1096,8 +1086,8 @@ TEST_F(TestArrayExport, RunEndEncoded) {
 TEST_F(TestArrayExport, RunEndEncodedSliced) {
   auto factory = []() -> Result<std::shared_ptr<Array>> {
     ARROW_ASSIGN_OR_RAISE(auto ree_array,
-                          REEFromJSON(run_end_encoded(int32(), int8()),
-                                      "[1, 2, 2, 3, null, null, null, 4]"));
+                          json::ArrayFromJSONString(run_end_encoded(int32(), int8()),
+                                                    "[1, 2, 2, 3, null, null, null, 4]"));
     return ree_array->Slice(1, 5);
   };
   TestNested(factory);
@@ -1429,7 +1419,7 @@ class TestDeviceArrayExport : public ::testing::Test {
       const std::shared_ptr<MemoryManager>& mm, std::shared_ptr<DataType> type,
       const char* json) {
     return [=]() -> Result<std::shared_ptr<Array>> {
-      ARROW_ASSIGN_OR_RAISE(auto result, REEFromJSON(type, json));
+      ARROW_ASSIGN_OR_RAISE(auto result, json::ArrayFromJSONString(type, json));
       return ToDevice(mm, *result->data());
     };
   }
@@ -3166,9 +3156,10 @@ TEST_F(TestArrayImport, RunEndEncoded) {
   FillPrimitive(AddChild(), 5, 0, 0, run_ends_buffers5);
   FillPrimitive(AddChild(), 5, 0, 0, primitive_buffers_no_nulls5);
   FillRunEndEncoded(9, 0);
-  ASSERT_OK_AND_ASSIGN(auto expected,
-                       REEFromJSON(run_end_encoded(int16(), float32()),
-                                   "[0.0, 1.5, -2.0, -2.0, 3.0, 3.0, 3.0, 4.0, 4.0]"));
+  ASSERT_OK_AND_ASSIGN(
+      auto expected,
+      json::ArrayFromJSONString(run_end_encoded(int16(), float32()),
+                                "[0.0, 1.5, -2.0, -2.0, 3.0, 3.0, 3.0, 4.0, 4.0]"));
   ASSERT_OK(expected->ValidateFull());
   CheckImport(expected);
 }
@@ -3179,29 +3170,33 @@ TEST_F(TestArrayImport, RunEndEncodedWithOffset) {
   FillPrimitive(AddChild(), 3, 0, 2, run_ends_buffers5);
   FillPrimitive(AddChild(), 3, 0, 2, primitive_buffers_no_nulls5);
   FillRunEndEncoded(7, 0);
-  ASSERT_OK_AND_ASSIGN(auto expected,
-                       REEFromJSON(ree_type, "[-2.0, -2.0, -2.0, -2.0, 3.0, 3.0, 3.0]"));
+  ASSERT_OK_AND_ASSIGN(
+      auto expected,
+      json::ArrayFromJSONString(ree_type, "[-2.0, -2.0, -2.0, -2.0, 3.0, 3.0, 3.0]"));
   CheckImport(expected);
 
   // Offset in parent
   FillPrimitive(AddChild(), 5, 0, 0, run_ends_buffers5);
   FillPrimitive(AddChild(), 5, 0, 0, primitive_buffers_no_nulls5);
   FillRunEndEncoded(5, 2);
-  ASSERT_OK_AND_ASSIGN(expected, REEFromJSON(ree_type, "[-2.0, -2.0, 3.0, 3.0, 3.0]"));
+  ASSERT_OK_AND_ASSIGN(
+      expected, json::ArrayFromJSONString(ree_type, "[-2.0, -2.0, 3.0, 3.0, 3.0]"));
   CheckImport(expected);
 
   // Length in parent that cuts last run
   FillPrimitive(AddChild(), 5, 0, 0, run_ends_buffers5);
   FillPrimitive(AddChild(), 5, 0, 0, primitive_buffers_no_nulls5);
   FillRunEndEncoded(4, 2);
-  ASSERT_OK_AND_ASSIGN(expected, REEFromJSON(ree_type, "[-2.0, -2.0, 3.0, 3.0]"));
+  ASSERT_OK_AND_ASSIGN(expected,
+                       json::ArrayFromJSONString(ree_type, "[-2.0, -2.0, 3.0, 3.0]"));
   CheckImport(expected);
 
   // Offset in both children and parent
   FillPrimitive(AddChild(), 3, 0, 2, run_ends_buffers5);
   FillPrimitive(AddChild(), 3, 0, 2, primitive_buffers_no_nulls5);
   FillRunEndEncoded(4, 2);
-  ASSERT_OK_AND_ASSIGN(expected, REEFromJSON(ree_type, "[-2.0, -2.0, 3.0, 3.0]"));
+  ASSERT_OK_AND_ASSIGN(expected,
+                       json::ArrayFromJSONString(ree_type, "[-2.0, -2.0, 3.0, 3.0]"));
   CheckImport(expected);
 }
 
@@ -4090,9 +4085,9 @@ TEST_F(TestArrayRoundtrip, Union) {
 TEST_F(TestArrayRoundtrip, RunEndEncoded) {
   {
     auto factory = []() -> Result<std::shared_ptr<Array>> {
-      ARROW_ASSIGN_OR_RAISE(auto ree_array,
-                            REEFromJSON(run_end_encoded(int32(), int8()),
-                                        "[1, 2, 2, 3, null, null, null, 4]"));
+      ARROW_ASSIGN_OR_RAISE(
+          auto ree_array, json::ArrayFromJSONString(run_end_encoded(int32(), int8()),
+                                                    "[1, 2, 2, 3, null, null, null, 4]"));
       return ree_array->Slice(1, 5);
     };
     TestWithArrayFactory(factory);
